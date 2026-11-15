@@ -1,0 +1,27 @@
+# Values for the platform's service chart (homelab-platform/platform/service-chart).
+# Argo CD deploys this file; CI checks it against the platform's schema and policies.
+# Labels, security context, probes and metrics come from the chart.
+
+# Name of the service in the cluster. Change it when you create a service from the template
+name: service-template
+
+image:
+  # ghcr.io/<owner>/<repository>, lowercase. CI pushes here
+  repository: ghcr.io/karppimc/service-template
+  # The commit SHA of the image to run. Release a new version by changing it in a
+  # pull request, after CI has pushed the image for that commit
+  tag: "0000000000000000000000000000000000000000"
+
+port: 8080
+replicas: 2
+
+# Memory request and limit are required by policy. Raise them from measurements
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 64Mi
+
+env:
+  SERVICE_NAME: service-template

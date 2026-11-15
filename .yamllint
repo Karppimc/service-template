@@ -1,0 +1,13 @@
+# yamllint configuration (run: yamllint .)
+extends: default
+
+rules:
+  line-length:
+    max: 120
+  # Helm values and workflows do not need a leading "---"
+  document-start: disable
+  # Do not read the GitHub Actions "on:" key as a boolean
+  truthy:
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1

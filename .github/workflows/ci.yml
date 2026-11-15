@@ -1,0 +1,168 @@
+---
+# CI of a service on the platform: test the code, build and scan the image,
+# check the deployment values against the platform, and push the image on main.
+#
+# The ruleset on main requires one check: "validate". It passes only when
+# every other job passed.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Versions are pinned in one place: actions by commit SHA, binaries by SHA256
+  TRIVY_VERSION: 0.76.2
+  TRIVY_SHA256: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+  # The same tools and versions the platform's own CI uses
+  HELM_VERSION: v3.22.0
+  HELM_SHA256: 1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb
+  KYVERNO_VERSION: v1.19.1
+  KYVERNO_SHA256: b38228f367fc0fdc2b08f4c83ea50ac5f16c60ff8d62d76a66157c33c47b70ae
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  CRD_CATALOG_REF: 89c736bdde38b5fecd0f8436ec5f3aa3679a3b86
+  # The platform this service runs on: its chart and policies are the contract.
+  # Deliberately main, not a pinned commit: the check must use the policies in force
+  PLATFORM_REPOSITORY: karppimc/homelab-platform
+  PLATFORM_REF: main
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "${unformatted}" ]; then
+            echo "::error::Run gofmt on: ${unformatted}"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  image:
+    name: image
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Needed to push to GHCR; the push step itself runs only on main
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # GHCR image names are lowercase, GitHub owner names are not always
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "${GITHUB_ENV}"
+      # The tag is the commit SHA: one commit, one image, never overwritten
+      - name: Build
+        run: docker build --build-arg "VERSION=${GITHUB_SHA}" -t "${IMAGE}:${GITHUB_SHA}" .
+      # Run it the way the platform does: read-only root filesystem, no
+      # capabilities, numeric non-root user
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --user 65532:65532 \
+            -p 8080:8080 "${IMAGE}:${GITHUB_SHA}"
+          for _ in $(seq 1 20); do
+            if curl -fsS http://localhost:8080/readyz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://localhost:8080/healthz
+          curl -fsS http://localhost:8080/readyz
+          curl -fsS http://localhost:8080/metrics | grep -q '^http_requests_total'
+          docker stop smoke
+          test "$(docker inspect smoke --format '{{.State.ExitCode}}')" = "0"
+      - name: Install trivy
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSLo trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf trivy.tar.gz -C "${RUNNER_TEMP}/bin" trivy
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+      # Fails on known HIGH and CRITICAL vulnerabilities that have a fix
+      - name: Scan
+        run: >-
+          trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed
+          --no-progress "${IMAGE}:${GITHUB_SHA}"
+      - name: Push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          echo "Pushed ${IMAGE}:${GITHUB_SHA}" >> "${GITHUB_STEP_SUMMARY}"
+
+  # deploy/values.yaml must be accepted by the platform: its chart schema, the
+  # Kubernetes schemas and every Kyverno policy, checked with the platform's own script
+  deploy:
+    name: deploy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          ref: ${{ env.PLATFORM_REF }}
+          path: .platform
+      - name: Install helm, kyverno and kubeconform
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSLo helm.tar.gz \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLo kyverno.tar.gz \
+            "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz"
+          curl -fsSLo kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          sha256sum -c - <<EOF
+          ${HELM_SHA256}  helm.tar.gz
+          ${KYVERNO_SHA256}  kyverno.tar.gz
+          ${KUBECONFORM_SHA256}  kubeconform.tar.gz
+          EOF
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf helm.tar.gz -C "${RUNNER_TEMP}/bin" --strip-components=1 linux-amd64/helm
+          tar -xzf kyverno.tar.gz -C "${RUNNER_TEMP}/bin" kyverno
+          tar -xzf kubeconform.tar.gz -C "${RUNNER_TEMP}/bin" kubeconform
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+      - name: Check deploy/values.yaml against the platform
+        run: .platform/scripts/check-service-chart.sh deploy/values.yaml
+
+  # The only required check. "if: always()" matters: a skipped job counts as
+  # passed for a required check, so this job must run and fail explicitly when
+  # a dependency failed or was cancelled.
+  validate:
+    name: validate
+    if: always()
+    needs: [test, image, deploy]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            if [ "${result}" != "success" ]; then
+              echo "::error::A CI job did not succeed"
+              exit 1
+            fi
+          done
