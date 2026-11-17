@@ -18,10 +18,11 @@ The Deployment, Service and ServiceMonitor are not in this repository. The platf
 
 1. **Create the repository:** "Use this template" on GitHub, or `gh repo create <owner>/<name> --template Karppimc/service-template --public`.
 2. **Name it** in `deploy/values.yaml`: `name`, `image.repository` (`ghcr.io/<owner>/<name>`, lowercase) and `env.SERVICE_NAME`.
-3. **Write the service:** replace the index handler in `main.go` with your routes. Keep `/healthz`, `/readyz` and `/metrics`: the platform's probes and Prometheus depend on them.
-4. **Push to `main`** through a pull request. CI pushes the image `ghcr.io/<owner>/<name>:<commit SHA>`. The first time, make the package public under the repository's Packages settings, so the cluster can pull it without a secret.
-5. **Release:** set `image.tag` in `deploy/values.yaml` to the commit SHA of the image, in a pull request.
-6. **Onboard to the platform** with two files in homelab-platform, described in its README under "Onboarding a workload": the workload file (namespace, quota, Argo CD project) and an Application that combines the platform's chart with this repository's `deploy/values.yaml`.
+3. **Publish it, if it needs to be reachable from the LAN:** uncomment `ingress.host` in `deploy/values.yaml` and choose a `*.home.arpa` name. The platform adds an HTTPS-only Ingress with a certificate.
+4. **Write the service:** replace the index handler in `main.go` with your routes. Keep `/healthz`, `/readyz` and `/metrics`: the platform's probes and Prometheus depend on them.
+5. **Push to `main`** through a pull request. CI pushes the image `ghcr.io/<owner>/<name>:<commit SHA>`. The first time, make the package public under the repository's Packages settings, so the cluster can pull it without a secret.
+6. **Release:** set `image.tag` in `deploy/values.yaml` to the commit SHA of the image, in a pull request.
+7. **Onboard to the platform** with two files in homelab-platform, described in its README under "Onboarding a workload": the workload file (namespace, quota, Argo CD project) and an Application that combines the platform's chart with this repository's `deploy/values.yaml`.
 
 After that, a new version is one pull request here that changes `image.tag`.
 

@@ -13,6 +13,12 @@ image:
   tag: "0000000000000000000000000000000000000000"
 
 port: 8080
+
+# Publish the service on the LAN over HTTPS (certificate from the platform CA).
+# Only *.home.arpa names; the name must resolve to a cluster node (hosts file).
+# Leave it out to keep the service reachable inside the cluster only.
+# ingress:
+#   host: my-service.home.arpa
 replicas: 2
 
 # Memory request and limit are required by policy. Raise them from measurements
